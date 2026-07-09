@@ -1,0 +1,9 @@
+.cache/
+.repos/
+*.jsonl
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+tmp/
+temp/
