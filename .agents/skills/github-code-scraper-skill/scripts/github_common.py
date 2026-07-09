@@ -560,6 +560,99 @@ def metadata_document(
     }
 
 
+def _git_metadata_document(
+    owner: str,
+    repo: str,
+    ref: str,
+    workdir_arg: str | None,
+    keep_workdir: bool,
+    truncated: bool,
+) -> tuple[dict, Path | None]:
+    if workdir_arg:
+        repo_dir = Path(workdir_arg)
+        cleanup_target = None if keep_workdir else repo_dir
+    else:
+        temp_root = temporary_workdir()
+        repo_dir = temp_root / repo
+        cleanup_target = None if keep_workdir else temp_root
+
+    clone_blobless_no_checkout(owner, repo, ref, repo_dir)
+    metas = git_tree_metadata(owner, repo, ref, repo_dir)
+    doc = metadata_document(
+        owner,
+        repo,
+        ref,
+        "git-tree",
+        truncated,
+        metas,
+        workdir=str(repo_dir),
+    )
+    return doc, cleanup_target
+
+
+def collect_metadata_document(
+    repo_arg: str,
+    explicit_ref: str | None,
+    strategy: str,
+    workdir_arg: str | None = None,
+    keep_workdir: bool = False,
+) -> tuple[dict, Path | None, bool]:
+    owner, repo = parse_repo(repo_arg)
+    last_error: ScraperError | None = None
+
+    for ref in candidate_refs(explicit_ref):
+        try:
+            if strategy == "git-tree":
+                doc, cleanup_target = _git_metadata_document(
+                    owner, repo, ref, workdir_arg, keep_workdir, truncated=False
+                )
+                return doc, cleanup_target, keep_workdir
+
+            metas, truncated = fetch_api_tree(owner, repo, ref)
+            if strategy == "api-tree":
+                if truncated:
+                    raise ScraperError(
+                        f"GitHub API tree is truncated for {owner}/{repo}@{ref}; "
+                        "use --strategy auto or --strategy git-tree"
+                    )
+                doc = metadata_document(owner, repo, ref, "api-tree", False, metas)
+                return doc, None, False
+
+            if not truncated:
+                doc = metadata_document(owner, repo, ref, "api-tree", False, metas)
+                return doc, None, False
+
+            doc, cleanup_target = _git_metadata_document(
+                owner, repo, ref, workdir_arg, keep_workdir, truncated=True
+            )
+            return doc, cleanup_target, keep_workdir
+        except GithubHttpError as exc:
+            last_error = exc
+            if exc.status == 404 and explicit_ref is None:
+                continue
+            if strategy == "auto" and is_rate_limitish(exc):
+                try:
+                    doc, cleanup_target = _git_metadata_document(
+                        owner, repo, ref, workdir_arg, keep_workdir, truncated=True
+                    )
+                    return doc, cleanup_target, keep_workdir
+                except ScraperError as git_exc:
+                    last_error = git_exc
+            break
+        except RepoRefNotFoundError as exc:
+            last_error = exc
+            if explicit_ref is None:
+                continue
+            break
+        except ScraperError as exc:
+            last_error = exc
+            break
+
+    if last_error:
+        raise last_error
+    raise RepoRefNotFoundError(f"Unable to find a usable ref for {owner}/{repo}")
+
+
 def temporary_workdir(prefix: str = "github-code-scraper-") -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix))
 
