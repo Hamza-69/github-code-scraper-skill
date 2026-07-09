@@ -324,6 +324,10 @@ def _match_one(path: str, pattern: str) -> bool:
         return True
     if pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:]):
         return True
+    if "/**/" in pattern:
+        collapsed = pattern.replace("/**/", "/")
+        if fnmatch.fnmatchcase(path, collapsed):
+            return True
     return False
 
 
